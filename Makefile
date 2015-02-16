@@ -1,4 +1,4 @@
-VERSION=0.3.1
+VERSION=0.3.2.2-redbridge
 
 # By default, all dependencies (zeromq, etc) will be downloaded and installed
 # locally. You can change this if you are deploying your own.
@@ -14,7 +14,7 @@ CFLAGS+=-Ibuild/include
 LDFLAGS+=-Lbuild/lib -Wl,-rpath,'$$ORIGIN/../lib'
 
 default: build-all
-build-all: build/bin/logstash-forwarder build/bin/logstash-forwarder.sh
+build-all: build/bin/logstash-forwarder-elk build/bin/logstash-forwarder.sh
 #build-all: build/bin/keygen
 include Makefile.ext
 
@@ -44,16 +44,17 @@ vendor-clean:
 	$(MAKE) -C vendor/zeromq/ clean
 	$(MAKE) -C vendor/zlib/ clean
 
-rpm deb: PREFIX=/opt/logstash-forwarder
+rpm deb: PREFIX=/opt/logstash-forwarder-elk
 rpm deb: | build-all
-	fpm -s dir -t $@ -n logstash-forwarder -v $(VERSION) \
+	fpm -s dir -t $@ -n logstash-forwarder-elk -v $(VERSION) \
 		--replaces lumberjack \
 		--exclude '*.a' --exclude 'lib/pkgconfig/zlib.pc' \
 		--description "a log shipping tool" \
 		--url "https://github.com/elasticsearch/logstash-forwarder" \
-		build/bin/logstash-forwarder=$(PREFIX)/bin/ \
-		build/bin/logstash-forwarder.sh=$(PREFIX)/bin/ \
-		logstash-forwarder.init=/etc/init.d/logstash-forwarder
+		build/bin/logstash-forwarder-elk=$(PREFIX)/bin/ \
+		build/bin/logstash-forwarder-elk.sh=$(PREFIX)/bin/ \
+		logstash-forwarder.init=/etc/init.d/logstash-forwarder-elk \
+		logstash-forwarder.conf.example=/etc/logstash-forwarder-elk/logstash-forwarder.conf
 
 # Vendor'd dependencies
 # If VENDOR contains 'zeromq' download and build it.
@@ -73,7 +74,7 @@ endif # libsodium
 build/bin/logstash-forwarder.sh: logstash-forwarder.sh | build/bin
 	install -m 755 $^ $@
 
-build/bin/logstash-forwarder: | build/bin go-check
+build/bin/logstash-forwarder-elk: | build/bin go-check
 	PKG_CONFIG_PATH=$$PWD/build/lib/pkgconfig \
 		go build -ldflags '-r $$ORIGIN/../lib' -v -o $@
 build/bin/keygen:  | build/bin go-check
