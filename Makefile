@@ -14,7 +14,7 @@ CFLAGS+=-Ibuild/include
 LDFLAGS+=-Lbuild/lib -Wl,-rpath,'$$ORIGIN/../lib'
 
 default: build-all
-build-all: build/bin/logstash-forwarder-elk build/bin/logstash-forwarder.sh
+build-all: build/bin/logstash-forwarder-elk build/bin/logstash-forwarder-elk.sh
 #build-all: build/bin/keygen
 include Makefile.ext
 
@@ -71,7 +71,7 @@ build/bin/keygen: | build/lib/pkgconfig/sodium.pc
 build/bin/keygen: | build/bin build/lib/libsodium.$(LIBEXT)
 endif # libsodium
 
-build/bin/logstash-forwarder.sh: logstash-forwarder.sh | build/bin
+build/bin/logstash-forwarder-elk.sh: logstash-forwarder.sh | build/bin
 	install -m 755 $^ $@
 
 build/bin/logstash-forwarder-elk: | build/bin go-check
