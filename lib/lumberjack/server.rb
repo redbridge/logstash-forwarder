@@ -22,7 +22,7 @@ module Lumberjack
         :address => "0.0.0.0",
         :ssl_certificate => nil,
         :ssl_key => nil,
-        :ssl_key_passphrase => nil,
+        :ssl_key_passphrase => nil
       }.merge(options)
 
       [:ssl_certificate, :ssl_key].each do |k|
@@ -31,7 +31,8 @@ module Lumberjack
         end
       end
 
-      @tcp_server = TCPServer.new(@options[:port])
+      @tcp_server = TCPServer.new(@options[:address], @options[:port])
+
       # Query the port in case the port number is '0'
       # TCPServer#addr == [ address_family, port, address, address ]
       @port = @tcp_server.addr[1]
@@ -44,25 +45,26 @@ module Lumberjack
 
     def run(&block)
       while true
-        # NOTE: This means ssl accepting is single-threaded.
-        begin
-          client = nil
-          client = @ssl_server.accept
-        rescue EOFError, OpenSSL::SSL::SSLError, IOError
-          # ssl handshake failure or other issue, skip it.
-          # TODO(sissel): log the error
-          # TODO(sissel): try to identify what client was connecting that failed.
-          if !client.nil?
-            client.close rescue nil
-          end
-          next
-        end
-
-        Thread.new(client) do |fd|
-          Connection.new(fd).run(&block)
+        connection = accept
+        Thread.new(connection) do |connection|
+          connection.run(&block)
         end
       end
     end # def run
+
+    def accept(&block)
+      begin
+        fd = @ssl_server.accept
+      rescue EOFError, OpenSSL::SSL::SSLError, IOError
+        # ssl handshake or other accept-related failure.
+        # TODO(sissel): Make it possible to log this.
+      end
+      if block_given?
+        block.call(fd)
+      else
+        Connection.new(fd)
+      end
+    end
   end # class Server
 
   class Parser
@@ -95,16 +97,16 @@ module Lumberjack
       while have?(@need)
         send(@state, &block) 
         #case @state
-          #when :header; header(&block)
-          #when :window_size; window_size(&block)
-          #when :data_lead; data_lead(&block)
-          #when :data_field_key_len; data_field_key_len(&block)
-          #when :data_field_key; data_field_key(&block)
-          #when :data_field_value_len; data_field_value_len(&block)
-          #when :data_field_value; data_field_value(&block)
-          #when :data_field_value; data_field_value(&block)
-          #when :compressed_lead; compressed_lead(&block)
-          #when :compressed_payload; compressed_payload(&block)
+        #when :header; header(&block)
+        #when :window_size; window_size(&block)
+        #when :data_lead; data_lead(&block)
+        #when :data_field_key_len; data_field_key_len(&block)
+        #when :data_field_key; data_field_key(&block)
+        #when :data_field_value_len; data_field_value_len(&block)
+        #when :data_field_value; data_field_value(&block)
+        #when :data_field_value; data_field_value(&block)
+        #when :compressed_lead; compressed_lead(&block)
+        #when :compressed_payload; compressed_payload(&block)
         #end # case @state
       end
       return nil
@@ -139,10 +141,10 @@ module Lumberjack
       version, frame_type = get.bytes.to_a[0..1]
 
       case frame_type
-        when FRAME_WINDOW; transition(:window_size, 4)
-        when FRAME_DATA; transition(:data_lead, 8)
-        when FRAME_COMPRESSED; transition(:compressed_lead, 4)
-        else; raise "Unknown frame type: #{frame_type}"
+      when FRAME_WINDOW; transition(:window_size, 4)
+      when FRAME_DATA; transition(:data_lead, 8)
+      when FRAME_COMPRESSED; transition(:compressed_lead, 4)
+      else; raise "Unknown frame type: #{frame_type}"
       end
     end
 
@@ -192,7 +194,7 @@ module Lumberjack
       length = get.unpack("N").first
       transition(:compressed_payload, length)
     end
-    
+
     def compressed_payload(&block)
       original = Zlib::Inflate.inflate(get)
       transition(:header, 2)
@@ -222,8 +224,8 @@ module Lumberjack
         # X: too many events after errors.
         @parser.feed(@fd.sysread(16384)) do |event, *args|
           case event
-            when :window_size; window_size(*args, &block)
-            when :data; data(*args, &block)
+          when :window_size; window_size(*args, &block)
+          when :data; data(*args, &block)
           end
           #send(event, *args)
         end # feed
@@ -232,16 +234,19 @@ module Lumberjack
       # EOF or other read errors, only action is to shutdown which we'll do in
       # 'ensure'
     ensure
-      # Try to ensure it's closed, but if this fails I don't care.
-      @fd.close rescue nil
+      close rescue 'Already closed stream'
     end # def run
+
+    def close
+      @fd.close
+    end
 
     def window_size(size)
       @window_size = size
     end
 
     def data(sequence, map, &block)
-      block.call(map)
+      block.call(map) if block_given?
       if (sequence - @last_ack) >= @window_size
         @fd.syswrite(["1A", sequence].pack("A*N"))
         @last_ack = sequence

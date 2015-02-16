@@ -4,8 +4,8 @@ require "openssl"
 require "zlib"
 
 module Lumberjack
-  
-  SEQUENCE_MAX = (2**(0.size * 8 -2) -1)
+
+  SEQUENCE_MAX = (2**32-1).freeze
 
   class Client
     def initialize(opts={})
@@ -73,44 +73,58 @@ module Lumberjack
       @host = @opts[:address]
       @window_size = @opts[:window_size]
 
-      tcp_socket = TCPSocket.new(@opts[:address], @opts[:port])
-      openssl_cert = OpenSSL::X509::Certificate.new(File.read(@opts[:ssl_certificate]))
+      connection_start(opts)
+    end
+
+    private
+    def connection_start(opts)
+      tcp_socket = TCPSocket.new(opts[:address], opts[:port])
       @socket = OpenSSL::SSL::SSLSocket.new(tcp_socket)
       @socket.connect
-
-      #if @socket.peer_cert.to_s != openssl_cert.to_s
-      #  raise "Client and server certificates do not match."
-      #end
-
       @socket.syswrite(["1", "W", @window_size].pack("AAN"))
     end
 
     private 
     def inc
-      @sequence = 0 if @sequence+1 > Lumberjack::SEQUENCE_MAX
-      @sequence += 1
+      @sequence = 0 if @sequence + 1 > Lumberjack::SEQUENCE_MAX
+      @sequence = @sequence + 1
     end
 
     private
     def write(msg)
       compress = Zlib::Deflate.deflate(msg)
-      @socket.syswrite(["1","C",compress.length,compress].pack("AANA#{compress.length}"))
+      @socket.syswrite(["1","C",compress.bytesize,compress].pack("AANA#{compress.bytesize}"))
     end
 
     public
     def write_hash(hash)
-      frame = to_frame(hash, inc)
-      ack if (@sequence - (@last_ack + 1)) >= @window_size
+      frame = Encoder.to_compressed_frame(hash, inc)
+      ack if unacked_sequence_size >= @window_size
       write frame
     end
 
     private
     def ack
-      version = @socket.read(1)
-      type = @socket.read(1)
+      _, type = read_version_and_type
       raise "Whoa we shouldn't get this frame: #{type}" if type != "A"
-      @last_ack = @socket.read(4).unpack("N").first
-      ack if (@sequence - (@last_ack + 1)) >= @window_size
+      @last_ack = read_last_ack
+      ack if unacked_sequence_size >= @window_size
+    end
+
+    private
+    def unacked_sequence_size
+      sequence - (@last_ack + 1)
+    end
+
+    private
+    def read_version_and_type
+      version = @socket.read(1)
+      type    = @socket.read(1)
+      [version, type]
+    end
+    private
+    def read_last_ack
+      @socket.read(4).unpack("N").first
     end
 
     private
@@ -122,8 +136,8 @@ module Lumberjack
       pack << "N"
       keys.each do |k|
         val = deep_get(hash,k)
-        key_length = k.length
-        val_length = val.length
+        key_length = k.bytesize
+        val_length = val.bytesize
         frame << key_length
         pack << "N"
         frame << k
@@ -155,4 +169,51 @@ module Lumberjack
       keys.flatten
     end
   end
+
+  module Encoder
+    def self.to_compressed_frame(hash, sequence)
+      compress = Zlib::Deflate.deflate(to_frame(hash, sequence))
+      ["1", "C", compress.bytesize, compress].pack("AANA#{compress.length}")
+    end
+
+    def self.to_frame(hash, sequence)
+      frame = ["1", "D", sequence]
+      pack = "AAN"
+      keys = deep_keys(hash)
+      frame << keys.length
+      pack << "N"
+      keys.each do |k|
+        val = deep_get(hash,k)
+        key_length = k.bytesize
+        val_length = val.bytesize
+        frame << key_length
+        pack << "N"
+        frame << k
+        pack << "A#{key_length}"
+        frame << val_length
+        pack << "N"
+        frame << val
+        pack << "A#{val_length}"
+      end
+      frame.pack(pack)
+    end
+
+    private
+    def self.deep_get(hash, key="")
+      return hash if key.nil?
+      deep_get(
+        hash[key.split('.').first],
+        key[key.split('.').first.length+1..key.length]
+      )
+    end
+    private
+    def self.deep_keys(hash, prefix="")
+      keys = []
+      hash.each do |k,v|
+        keys << "#{prefix}#{k}" if v.class == String
+        keys << deep_keys(hash[k], "#{k}.") if v.class == Hash
+      end
+      keys.flatten
+    end
+  end # module Encoder
 end
